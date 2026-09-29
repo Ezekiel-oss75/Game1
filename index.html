@@ -1,0 +1,283 @@
+from pathlib import Path
+import re
+
+path = Path("/mnt/data/territory-command/index.html")
+html = path.read_text(encoding="utf-8")
+
+# --- Mobile CSS ---
+mobile_css = r"""
+/* Mobile RTS layout */
+#mobileBar{display:none}
+.mobileOnly{display:none}
+@media (max-width:700px){
+  html,body{overflow:hidden;touch-action:none}
+  #app{grid-template-rows:48px 1fr 62px}
+  #top{height:48px;padding:0 7px;gap:7px;overflow-x:auto;white-space:nowrap}
+  .logo{font-size:11px;min-width:max-content}
+  .stat{font-size:11px;gap:3px}
+  .stat .income{display:none}
+  #score{margin-left:0;min-width:105px}
+  #score .bar{width:60px;height:10px}
+  #pause,#reset{padding:6px 8px}
+  #game{min-height:0}
+  #build,#tasks,#tech,#info,#mini{
+    display:none;
+    z-index:20;
+  }
+  #build.mobile-open,#tasks.mobile-open,#tech.mobile-open,#info.mobile-open{
+    display:block;
+  }
+  #build{
+    left:6px;top:6px;bottom:68px;width:calc(100vw - 12px);
+    max-height:65vh;overflow-y:auto;
+  }
+  #build .buildBtn{grid-template-columns:38px 1fr;padding:7px}
+  #tasks{
+    right:6px;top:6px;width:calc(100vw - 12px);padding-bottom:6px
+  }
+  #tech{
+    right:6px;top:6px;bottom:68px;width:calc(100vw - 12px);
+    overflow:auto;
+  }
+  #info{
+    left:6px;right:6px;bottom:68px;width:auto;
+  }
+  #mini{
+    display:block;left:auto;right:6px;top:6px;bottom:auto;width:145px;height:105px;
+    opacity:.9;z-index:4;
+  }
+  #mini .title{padding:5px 8px;font-size:11px}
+  #mini .miniCanvas{width:100%;height:65px}
+  #bottom{
+    position:relative;display:block;height:62px;padding:5px 6px;z-index:30;
+  }
+  #units{
+    height:52px;display:flex;gap:5px;overflow-x:auto;padding-right:170px;
+  }
+  .unitCard{min-width:72px;width:72px;padding:4px;font-size:10px}
+  .unitIcon{font-size:19px}
+  .unitCard .small{font-size:9px}
+  .hint{display:none}
+  #log{
+    display:none
+  }
+  #mobileBar{
+    display:flex;position:absolute;right:6px;bottom:7px;height:48px;
+    gap:4px;z-index:40;background:#0b1723cc;padding:4px;border:1px solid #294158;border-radius:8px;
+    backdrop-filter:blur(5px)
+  }
+  #mobileBar button{min-width:44px;padding:4px;font-size:11px}
+  #gameCanvas,#effects{touch-action:none}
+}
+@media (max-width:430px){
+  .logo{display:none}
+  .stat:nth-of-type(3){display:none}
+  #mini{width:125px}
+  #units{padding-right:158px}
+  #mobileBar button{min-width:40px;font-size:10px}
+}
+"""
+html = html.replace("</style>", mobile_css + "\n</style>")
+
+# Add mobile command bar
+mobile_bar = r'''
+<div id="mobileBar" class="mobileOnly">
+  <button id="mMove">↗<br>Двигать</button>
+  <button id="mAttack">⚔<br>Атака</button>
+  <button id="mBuild">🏗<br>Строить</button>
+  <button id="mTech">🧪<br>Тех</button>
+  <button id="mTasks">☰<br>Задачи</button>
+  <button id="mInfo">ⓘ<br>Инфо</button>
+</div>
+'''
+html = html.replace('</footer>\n</div>', '</footer>\n' + mobile_bar + '\n</div>')
+
+# Add mobile state and helpers after state declaration
+marker = 'const state={energy:500,crystal:350,techRes:80,pop:0,popMax:40,territory:50,energyRate:8,crystalRate:5,techRate:1,centerLevel:1,buildMode:null,techs:{}};'
+replacement = marker + r'''
+let mobileCommand=null;
+function isMobile(){return window.matchMedia("(max-width:700px)").matches}
+function closeMobilePanels(){
+  ["build","tasks","tech","info"].forEach(id=>$("#"+id).classList.remove("mobile-open"));
+}
+function openMobilePanel(id){
+  closeMobilePanels();
+  $("#"+id).classList.add("mobile-open");
+}
+function setMobileCommand(mode){
+  mobileCommand=mode;
+  state.buildMode=null;
+  closeMobilePanels();
+  log(mode==="move"?"Коснитесь карты — приказ движения":"Коснитесь карты или врага — приказ атаки");
+}
+'''
+html = html.replace(marker, replacement)
+
+# Improve building placement: prevent off-map and overlap
+old = r'''canvas.addEventListener("click",e=>{
+ const p=worldPos(e);
+ if(state.buildMode){const d=buildDefs[state.buildMode];if(costOK(d.cost)){pay(d.cost);addBuilding(state.buildMode,p.x,p.y,"blue");log("Построено: "+d.name);state.buildMode=null}else log("Недостаточно ресурсов.");return}
+ const hitU=[...units].reverse().find(u=>dist(u,p)<16),hitB=[...buildings].reverse().find(b=>dist(b,p)<32);
+ if(hitU&&hitU.team==="blue")selectUnit(hitU);else if(hitB&&hitB.team==="blue")buildingClick(hitB);else{selected=null;selectedType=null}
+});'''
+new = r'''canvas.addEventListener("click",e=>{
+ const p=worldPos(e);
+
+ if(mobileCommand && selectedType==="unit" && selected?.team==="blue"){
+   if(mobileCommand==="attack"){
+     const target=[...units,...buildings].reverse().find(x=>x.team==="red"&&dist(x,p)<42);
+     selected.target=target||null; selected.move=target?null:{x:p.x,y:p.y};
+     log(target?"Атака цели":"Атака/движение к точке");
+   }else{
+     selected.target=null; selected.move={x:p.x,y:p.y}; log("Юнит получил приказ движения");
+   }
+   mobileCommand=null;
+   return;
+ }
+
+ if(state.buildMode){
+   const d=buildDefs[state.buildMode];
+   const margin=38;
+   const valid=p.x>margin&&p.x<W-margin&&p.y>margin&&p.y<H-margin;
+   const overlap=buildings.some(b=>dist(b,p)<58);
+   if(!valid){log("Нельзя строить за пределами карты.");return}
+   if(overlap){log("Место занято.");return}
+   if(costOK(d.cost)){
+     pay(d.cost);addBuilding(state.buildMode,p.x,p.y,"blue");
+     log("Построено: "+d.name);state.buildMode=null;
+   }else log("Недостаточно ресурсов.");
+   return;
+ }
+ const hitU=[...units].reverse().find(u=>dist(u,p)<18),hitB=[...buildings].reverse().find(b=>dist(b,p)<34);
+ if(hitU&&hitU.team==="blue")selectUnit(hitU);
+ else if(hitB&&hitB.team==="blue")buildingClick(hitB);
+ else{selected=null;selectedType=null}
+});'''
+html = html.replace(old,new)
+
+# Replace right-click handler to share command logic, while keeping desktop.
+old_context = r'''canvas.addEventListener("contextmenu",e=>{e.preventDefault();const p=worldPos(e);if(selectedType==="unit"&&selected.team==="blue"){const enemy=[...units,...buildings].find(x=>x.team==="red"&&dist(x,p)<35);selected.target=enemy||null;selected.move=enemy?null:{x:p.x,y:p.y};log(enemy?"Атака цели":"Юнит движется к точке");}});'''
+new_context = r'''canvas.addEventListener("contextmenu",e=>{
+ e.preventDefault();
+ const p=worldPos(e);
+ if(selectedType==="unit"&&selected.team==="blue"){
+   const enemy=[...units,...buildings].find(x=>x.team==="red"&&dist(x,p)<42);
+   selected.target=enemy||null;
+   selected.move=enemy?null:{x:p.x,y:p.y};
+   log(enemy?"Атака цели":"Юнит движется к точке");
+ }
+});'''
+html = html.replace(old_context,new_context)
+
+# Fix research engines so all future/current units gain speed; avoid stacking weirdness.
+html = html.replace(
+'''if(id==="reactor")state.energyRate+=8;if(id==="engines")units.filter(u=>u.team==="blue").forEach(u=>u.speed*=1.2);
+ if(id==="weapons")units.filter(u=>u.team==="blue").forEach(u=>u.maxHp*=1.25);''',
+'''if(id==="reactor")state.energyRate+=8;
+ if(id==="engines")units.filter(u=>u.team==="blue").forEach(u=>u.speed*=1.2);
+ if(id==="weapons")units.filter(u=>u.team==="blue").forEach(u=>{u.maxHp*=1.25;u.hp*=1.25});'''
+)
+
+# Fix task 4: use center level rather than unused state.centerLevel
+html = html.replace(
+'''$("#t4").className="task "+(state.centerLevel>1?"done":"");$("#t4").textContent=(state.centerLevel>1?"✓":"○")+" Улучшить командный центр";''',
+'''const centerUpgraded=buildings.some(b=>b.team==="blue"&&b.type==="center"&&b.level>1);
+ $("#t4").className="task "+(centerUpgraded?"done":"");$("#t4").textContent=(centerUpgraded?"✓":"○")+" Улучшить командный центр";'''
+)
+
+# Fix upgrade center so state.centerLevel stays meaningful
+html = html.replace(
+'''if(selected.type==="center")state.popMax+=10;''',
+'''if(selected.type==="center"){state.popMax+=10;state.centerLevel=selected.level;}'''
+)
+
+# Add defeat condition
+html = html.replace(
+'''if(buildings.filter(b=>b.team==="red"&&b.type==="center").length===0){log("Победа! Вражеский штаб уничтожен.");paused=true}''',
+'''if(buildings.filter(b=>b.team==="red"&&b.type==="center").length===0){log("Победа! Вражеский штаб уничтожен.");paused=true}
+ const ownCenter=buildings.some(b=>b.team==="blue"&&b.type==="center");
+ if(!ownCenter){log("Поражение! Ваш штаб уничтожен.");paused=true}'''
+)
+
+# Add mobile button handlers before loop.
+insert_before = 'function loop(now){'
+mobile_js = r'''
+$("#mMove").onclick=()=>setMobileCommand("move");
+$("#mAttack").onclick=()=>setMobileCommand("attack");
+$("#mBuild").onclick=()=>openMobilePanel("build");
+$("#mTech").onclick=()=>openMobilePanel("tech");
+$("#mTasks").onclick=()=>openMobilePanel("tasks");
+$("#mInfo").onclick=()=>{
+  if(selected) openMobilePanel("info"); else log("Сначала выберите юнит или здание.");
+};
+
+'''
+html = html.replace(insert_before, mobile_js + insert_before)
+
+# Improve unit cards: generate a simple mobile-friendly list from selected units.
+# Existing game does not render unit cards dynamically, so add a renderer and call it from updateUI.
+update_marker = 'function updateUI(){'
+unit_renderer = r'''
+function renderUnits(){
+ const el=$("#units");
+ const blue=units.filter(u=>u.team==="blue").slice(0,12);
+ el.innerHTML=blue.length?blue.map(u=>{
+   const d=unitDefs[u.type];
+   return `<div class="unitCard ${selected===u?"selected":""}" data-uid="${u.id}">
+     <div class="unitIcon">${d.icon}</div><b>${d.name}</b>
+     <div class="small">${Math.ceil(u.hp)} HP</div>
+   </div>`;
+ }).join(""):'<div class="hint">Нет доступных юнитов</div>';
+ el.querySelectorAll(".unitCard").forEach(card=>card.onclick=()=>{
+   const u=units.find(x=>x.id==card.dataset.uid);
+   if(u){selectUnit(u);if(isMobile())openMobilePanel("info")}
+ });
+}
+'''
+html = html.replace(update_marker, unit_renderer + update_marker)
+# Call renderUnits in updateUI, throttling is not needed at prototype scale.
+html = html.replace(
+'''$("#energy").textContent=Math.floor(state.energy);$("#crystal").textContent=Math.floor(state.crystal);''',
+'''renderUnits();
+ $("#energy").textContent=Math.floor(state.energy);$("#crystal").textContent=Math.floor(state.crystal);'''
+)
+
+# Make canvas drawing not cover mobile controls and improve touch selection.
+html = html.replace(
+'''canvas.addEventListener("click",e=>{''',
+'''canvas.addEventListener("pointerup",e=>{
+ if(e.pointerType==="mouse" && e.button!==0)return;
+ const p=worldPos(e); e.preventDefault();
+''',
+1)
+# The replacement duplicated "const p..." from old handler. Fix exact block opening.
+html = html.replace(
+''' const p=worldPos(e);
+
+ if(mobileCommand''',
+''' 
+ if(mobileCommand''',
+1)
+
+# Close pointer handler same as click handler already has });
+# But if browser fires click after pointerup, avoid duplicate action on touch by suppressing click? 
+# Replace pointerup end with a click fallback is complex; pointerup itself works for mouse and touch.
+# Remove duplicate original "});" only not needed.
+
+# Prevent browser scrolling/selection on touch for canvas and buttons.
+html = html.replace(
+'''#gameCanvas,#effects{touch-action:none}''',
+'''#gameCanvas,#effects{touch-action:none}
+  button{touch-action:manipulation}
+'''
+)
+
+# Add a desktop/mobile hint.
+html = html.replace(
+'''<div class="hint">ЛКМ — выбрать • ПКМ — приказ двигаться/атаковать • B — строительство • T — технологии</div>''',
+'''<div class="hint">ЛКМ — выбрать • ПКМ — приказ • B — строительство • T — технологии</div>'''
+)
+
+path.write_text(html, encoding="utf-8")
+print(f"Обновлено: {path}")
+print(f"Размер: {path.stat().st_size/1024:.1f} KB")
